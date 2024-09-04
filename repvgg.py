@@ -22,12 +22,12 @@ class RepVGGBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size,
                  stride=1, padding=0, dilation=1, groups=1, padding_mode='zeros', deploy=False, use_se=False):
         super(RepVGGBlock, self).__init__()
-        self.deploy = deploy
-        self.groups = groups
+        self.deploy = deploy # deploy为True时，为推理模式
+        self.groups = groups # 分组卷积
         self.in_channels = in_channels
 
-        assert kernel_size == 3
-        assert padding == 1
+        assert kernel_size == 3 # 3x3卷积
+        assert padding == 1 # 3x3卷积的padding为1
 
         padding_11 = padding - kernel_size // 2
 
@@ -37,13 +37,13 @@ class RepVGGBlock(nn.Module):
             #   Note that RepVGG-D2se uses SE before nonlinearity. But RepVGGplus models uses SE after nonlinearity.
             self.se = SEBlock(out_channels, internal_neurons=out_channels // 16)
         else:
-            self.se = nn.Identity()
+            self.se = nn.Identity() # 恒等变换
 
-        if deploy:
+        if deploy: # deploy为推理模式，rbr_reparam推理模式的3x3卷积层
             self.rbr_reparam = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride,
                                       padding=padding, dilation=dilation, groups=groups, bias=True, padding_mode=padding_mode)
 
-        else:
+        else: # 训练模式
             self.rbr_identity = nn.BatchNorm2d(num_features=in_channels) if out_channels == in_channels and stride == 1 else None
             self.rbr_dense = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, groups=groups)
             self.rbr_1x1 = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=stride, padding=padding_11, groups=groups)
@@ -52,14 +52,14 @@ class RepVGGBlock(nn.Module):
 
     def forward(self, inputs):
         if hasattr(self, 'rbr_reparam'):
-            return self.nonlinearity(self.se(self.rbr_reparam(inputs)))
+            return self.nonlinearity(self.se(self.rbr_reparam(inputs))) # 推理模式
 
         if self.rbr_identity is None:
             id_out = 0
         else:
             id_out = self.rbr_identity(inputs)
 
-        return self.nonlinearity(self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out))
+        return self.nonlinearity(self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out)) # 训练模式
 
 
     #   Optional. This may improve the accuracy and facilitates quantization in some cases.
@@ -88,6 +88,7 @@ class RepVGGBlock(nn.Module):
     #   for example, apply some penalties or constraints during training, just like you do to the other models.
 #   May be useful for quantization or pruning.
     def get_equivalent_kernel_bias(self):
+        # 融合3x3卷积层、1x1卷积层和恒等变换层的权重和偏置
         kernel3x3, bias3x3 = self._fuse_bn_tensor(self.rbr_dense)
         kernel1x1, bias1x1 = self._fuse_bn_tensor(self.rbr_1x1)
         kernelid, biasid = self._fuse_bn_tensor(self.rbr_identity)
@@ -111,7 +112,7 @@ class RepVGGBlock(nn.Module):
             eps = branch.bn.eps
         else:
             assert isinstance(branch, nn.BatchNorm2d)
-            if not hasattr(self, 'id_tensor'):
+            if not hasattr(self, 'id_tensor'): # 如果没有id_tensor，创建一个3x3卷积层的恒等变换层
                 input_dim = self.in_channels // self.groups
                 kernel_value = np.zeros((self.in_channels, input_dim, 3, 3), dtype=np.float32)
                 for i in range(self.in_channels):
@@ -128,6 +129,7 @@ class RepVGGBlock(nn.Module):
         return kernel * t, beta - running_mean * gamma / std
 
     def switch_to_deploy(self):
+        # 将1x1卷积和恒等变换层合并到3x3卷积层，然后把权重和偏置拷贝到新的3x3卷积层
         if hasattr(self, 'rbr_reparam'):
             return
         kernel, bias = self.get_equivalent_kernel_bias()
@@ -226,7 +228,7 @@ def create_RepVGG_B1g4(deploy=False, use_checkpoint=False):
 
 
 def create_RepVGG_B2(deploy=False, use_checkpoint=False):
-    return RepVGG(num_blocks=[4, 6, 16, 1], num_classes=1000,
+    return RepVGG(num_blocks=[4, 6, 16, 1], num_classes=1000, # num_blocks代表每个stage有几个RepVGGBlock
                   width_multiplier=[2.5, 2.5, 2.5, 5], override_groups_map=None, deploy=deploy, use_checkpoint=use_checkpoint)
 
 def create_RepVGG_B2g2(deploy=False, use_checkpoint=False):
